@@ -113,6 +113,6 @@ valid = hash.hasPrefix("0" * difficulty)          // leading hex zeros
 
 ## Related Packages
 
-- **JavaScript**: [`@akedly/shield`](../js/)
-- **Dart/Flutter**: [`akedly_shield`](../dart/)
-- **Kotlin (Android)**: [`com.akedly.shield`](../kotlin/)
+- **JavaScript**: [`@akedly/shield`](https://www.npmjs.com/package/@akedly/shield)
+- **Dart/Flutter**: [`akedly_shield`](https://github.com/Akedly-Org/akedly-shield-dart)
+- **Kotlin (Android)**: [`com.akedly.shield`](https://github.com/Akedly-Org/akedly-shield-kotlin)
