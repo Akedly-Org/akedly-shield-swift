@@ -58,4 +58,13 @@ final class PasskeyTests: XCTestCase {
         XCTAssertNil(r.resultToken)
         XCTAssertEqual(r.reason, "no_proof")
     }
+
+    func testWhitespaceOnlyResultTokenIsNotTrusted() {
+        // A whitespace-only token is not real proof — treat it as no_proof, not a success.
+        let url = URL(string: "myapp://akedly-passkey?verified=true&resultToken=%20%20")!
+        let r = AkedlyPasskeyCeremony.parseResult(from: url)
+        XCTAssertFalse(r.verified)
+        XCTAssertNil(r.resultToken)
+        XCTAssertEqual(r.reason, "no_proof")
+    }
 }

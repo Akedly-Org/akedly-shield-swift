@@ -65,7 +65,7 @@ public enum AkedlyPasskeyCeremony {
         func q(_ name: String) -> String? { items.first(where: { $0.name == name })?.value }
         let claimedVerified = (q("verified") ?? "false") == "true"
         let token = q("resultToken")
-        let hasProof = !(token?.isEmpty ?? true)
+        let hasProof = !((token?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ?? true)
         let verified = claimedVerified && hasProof
         return AkedlyPasskeyResult(
             verified: verified,

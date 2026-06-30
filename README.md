@@ -209,7 +209,8 @@ export function verifyAkedlyResult(token, apiKey) {
   if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return null;
   const payload = JSON.parse(Buffer.from(data, 'base64url').toString());
   if (!payload.exp || Date.now() > payload.exp) return null;        // expired
-  return payload; // { verified, purpose, transactionId, pipelineId, ... } — trust it
+  if (payload.verified !== true) return null;                       // only a verified outcome is trustworthy
+  return payload; // verified + unexpired — the caller MUST still bind payload.transactionId to the ceremony it started
 }
 ```
 
@@ -242,6 +243,7 @@ func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
 }
 
 func verifyAkedlyResult(_ token: String, apiKey: String) -> AkedlyClaim? {
+    guard !apiKey.isEmpty else { return nil }                       // fail closed: never HMAC under an empty key
     let prefix = "pkrt1."
     guard token.hasPrefix(prefix) else { return nil }
     let parts = token.dropFirst(prefix.count).split(separator: ".", omittingEmptySubsequences: false)
