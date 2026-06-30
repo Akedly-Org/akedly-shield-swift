@@ -278,6 +278,24 @@ func verifyAkedlyResult(_ token: String, apiKey: String) -> AkedlyClaim? {
 
 Treat the token like a one-time auth code: short-lived (~10 min) and accepted once.
 
+### Local vs on-device testing
+
+The `ceremonyOrigin` decides which auth-gateway runs the WebAuthn ceremony — and therefore the
+relying-party (RP) ID the passkey binds to.
+
+- **iOS Simulator (local).** Run the simulator on **iOS 16+** and sign it into iCloud
+  (Simulator → Settings → sign in) so the platform authenticator can create and use passkeys.
+  Pass `AkedlyPasskey(ceremonyOrigin: "http://localhost:5174")` to run the ceremony on the
+  local auth-gateway with RP=`localhost` — simulators accept a `localhost` RP and reach the
+  host's `localhost` directly.
+- **Real device (prod).** Use the default `ceremonyOrigin` (`https://auth.akedly.io`,
+  RP=`akedly.io`) — a `localhost` RP cannot bind on a physical device. Your token-minting
+  backend must also be reachable from the device.
+
+> There is a full end-to-end V1.2 sandbox — web plus all four mobile SDK reference apps, with a
+> headless Playwright + Chrome virtual-authenticator gate — for exercising this loop without a
+> physical device.
+
 ### Without the SDK (open the page yourself)
 
 `AkedlyPasskey` is a thin convenience wrapper. You can run the exact same ceremony with
