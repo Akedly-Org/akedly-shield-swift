@@ -18,7 +18,9 @@ public struct AkedlyPasskeyResult: Equatable {
     /// `nil` on any non-verified outcome.
     public let resultToken: String?
     /// `nil` when verified; otherwise a fall-back reason: "closed" (user cancelled),
-    /// "invalid_url", "start_failed", or a server code.
+    /// "busy" (a ceremony is already in flight on this instance), "invalid_url",
+    /// "start_failed", "no_proof" (verified with no result token), "failed" (unparseable
+    /// callback), or a server code.
     public let reason: String?
 
     public init(
@@ -46,12 +48,24 @@ public enum AkedlyPasskeyCeremony {
     /// `returnTarget` on `POST /auth-options` instead (it is signed into the ceremony token).
     public static func buildURL(origin: String, token: String, callbackScheme: String) -> URL? {
         let trimmed = origin.hasSuffix("/") ? String(origin.dropLast()) : origin
-        var comps = URLComponents(string: "\(trimmed)/pk")
-        comps?.queryItems = [
-            URLQueryItem(name: "token", value: token),
-            URLQueryItem(name: "returnUrl", value: "\(callbackScheme)://akedly-passkey"),
-        ]
-        return comps?.url
+        let tok = encodeQueryValue(token)
+        let returnUrl = encodeQueryValue("\(callbackScheme)://akedly-passkey")
+        return URL(string: "\(trimmed)/pk?token=\(tok)&returnUrl=\(returnUrl)")
+    }
+
+    /// Percent-encode a query value so its wire bytes match the Kotlin and Dart SDKs for the
+    /// ceremony's ASCII inputs (e.g. `myapp://akedly-passkey` → `myapp%3A%2F%2Fakedly-passkey`).
+    /// `URLComponents.queryItems` encodes against `urlQueryAllowed`, which *leaves `:` `/` `&` `=`
+    /// `+` literal* — so a returnUrl (or any value carrying a reserved char) would be emitted
+    /// un-escaped and corrupt the query. Allow only the unreserved marks (`-._~`) beyond
+    /// alphanumerics so every reserved char is escaped — byte-identical to `URLEncoder.encode`
+    /// / `Uri.encodeQueryComponent` for the ASCII token and `scheme://akedly-passkey` the
+    /// ceremony uses (space→`%20` vs the siblings' `+` only diverges on inputs those values
+    /// never contain).
+    private static func encodeQueryValue(_ value: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     /// Map the deep-link callback URL's query params to a result.
@@ -90,6 +104,7 @@ import AppKit
 /// PIN) work, and it captures the page's return-URL deep link internally — no Info.plist
 /// URL scheme or `AppDelegate` plumbing required beyond the `callbackScheme` you pass.
 @available(iOS 13.0, macOS 10.15, *)
+@MainActor
 public final class AkedlyPasskey: NSObject {
     private let ceremonyOrigin: String
     private let presentationAnchorProvider: (() -> ASPresentationAnchor)?
@@ -113,6 +128,15 @@ public final class AkedlyPasskey: NSObject {
     /// `callbackScheme`. **Never throws on a user cancel** — it returns `verified: false`,
     /// `reason: "closed"` so you can fall straight through to OTP.
     ///
+    /// Calling this while a ceremony from the same instance is still in flight resolves
+    /// immediately with `reason: "busy"` and leaves the running ceremony untouched — start a
+    /// second `AkedlyPasskey` if you need concurrent ceremonies.
+    ///
+    /// The whole `AkedlyPasskey` class is `@MainActor`-isolated: `ASWebAuthenticationSession.start()`,
+    /// the `session` reentrancy state, and presentation-anchor resolution all touch
+    /// AuthenticationServices/UIKit, which require the main thread. Callers on any executor can
+    /// `await` it — the hop is implicit.
+    ///
     /// - Parameters:
     ///   - token: the ceremony token (`POST /auth-options`) or enrollment token (OTP `/verify`).
     ///   - callbackScheme: your app's URL scheme (e.g. `"myapp"`).
@@ -124,7 +148,14 @@ public final class AkedlyPasskey: NSObject {
             return AkedlyPasskeyResult(verified: false, reason: "invalid_url")
         }
 
-        return await withCheckedContinuation { (continuation: CheckedContinuation<AkedlyPasskeyResult, Never>) in
+        // Reentrancy guard: one ceremony per instance. Starting a second over a live one would
+        // overwrite `session`, releasing the in-flight session and orphaning its continuation.
+        // `@MainActor` serializes this check with the assignment below, so it cannot race.
+        if session != nil {
+            return AkedlyPasskeyResult(verified: false, reason: "busy")
+        }
+
+        let result = await withCheckedContinuation { (continuation: CheckedContinuation<AkedlyPasskeyResult, Never>) in
             let session = ASWebAuthenticationSession(
                 url: url,
                 callbackURLScheme: callbackScheme
@@ -135,16 +166,16 @@ public final class AkedlyPasskey: NSObject {
                     // user cancelled or the session failed — a retryable, non-fatal outcome
                     continuation.resume(returning: AkedlyPasskeyResult(verified: false, reason: "closed"))
                 }
-                self.session = nil
             }
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = false // share the credential store
             self.session = session
             if !session.start() {
-                self.session = nil // don't retain the failed session (it captures self)
                 continuation.resume(returning: AkedlyPasskeyResult(verified: false, reason: "start_failed"))
             }
         }
+        self.session = nil // ceremony resolved — release for the next call (main-actor-isolated)
+        return result
     }
 }
 

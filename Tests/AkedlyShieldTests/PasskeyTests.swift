@@ -13,7 +13,24 @@ final class PasskeyTests: XCTestCase {
         let s = url!.absoluteString
         XCTAssertTrue(s.hasPrefix("https://auth.akedly.io/pk?"))
         XCTAssertTrue(s.contains("token=pk1.abc"))
-        XCTAssertTrue(s.contains("returnUrl=myapp://akedly-passkey"))
+        // returnUrl is percent-encoded to match the Kotlin/Dart SDKs byte-for-byte
+        // (`:`→%3A, `/`→%2F). The bare `myapp://…` form would corrupt the query.
+        XCTAssertTrue(s.contains("returnUrl=myapp%3A%2F%2Fakedly-passkey"))
+        XCTAssertFalse(s.contains("returnUrl=myapp://"))
+    }
+
+    func testBuildURLEncodesReservedCharsInToken() {
+        // A token carrying reserved query chars must be escaped, not passed through literally,
+        // or it would split the query (`&`/`=`) or read back wrong.
+        let url = AkedlyPasskeyCeremony.buildURL(
+            origin: "https://auth.akedly.io",
+            token: "a&b=c/d",
+            callbackScheme: "myapp"
+        )
+        XCTAssertNotNil(url)
+        let s = url!.absoluteString
+        XCTAssertTrue(s.contains("token=a%26b%3Dc%2Fd"))
+        XCTAssertFalse(s.contains("token=a&b=c/d"))
     }
 
     func testBuildURLTrimsTrailingSlash() {
