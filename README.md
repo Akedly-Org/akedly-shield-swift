@@ -136,6 +136,13 @@ if result.verified {
 To **enroll** a passkey, pass the `enrollmentToken` from a successful OTP `/verify` as the
 `token` instead — the API is identical; enrollment is proven on the next successful sign-in.
 
+> **Presenting reliably on first launch.** By default the session's presentation anchor is
+> resolved at ceremony time from the app's **foreground-active key window**. Early in the app
+> lifecycle — first launch, a cold-start deep link, mid scene-transition — that window may not
+> exist yet and the session can fail to present. If you call `openPasskeyCeremony` early, pass
+> your window explicitly: `AkedlyPasskey(presentationAnchor: { myWindow })`. The default anchor
+> resolution uses `UIApplication.shared`, so the library is **not usable from app extensions**.
+
 ### Verify the result (seamless — no polling)
 
 A verified ceremony carries a **`resultToken`**: a compact, signed proof of the outcome. You
@@ -158,10 +165,10 @@ pkrt1.<base64url(payloadJSON)>.<base64url(signature)>
 
 ```json
 { "v": 1, "purpose": "auth", "transactionId": "…", "pipelineId": "…",
-  "verified": true, "iat": 1730000000000, "exp": 1730000600000 }
+  "verified": true, "iat": 1730000000000, "exp": 1730000120000 }
 ```
 
-`iat`/`exp` are **milliseconds** since the Unix epoch (`exp` ≈ 10 minutes after `iat`).
+`iat`/`exp` are **milliseconds** since the Unix epoch (`exp` ≈ 2 minutes after `iat`).
 
 **The signature — exactly what is HMAC'd, in this order**
 
@@ -182,13 +189,18 @@ signature = HMAC_SHA256( key = YOUR_API_KEY, message = "pkrt1." + base64url(payl
 1. Reject if `token` doesn't start with `pkrt1.`.
 2. Strip the `pkrt1.` prefix, then split the remainder on `.` — there must be **exactly
    two** segments, `dataSegment` and `sigSegment` (reject otherwise).
-3. Compute `expected = HMAC_SHA256(apiKey, "pkrt1." + dataSegment)`.
-4. **Constant-time-compare** `expected` against `base64url-decode(sigSegment)`. Reject on
+3. Reject **non-canonical base64url**: each segment must contain only `[A-Za-z0-9_-]` AND
+   round-trip — `base64url-encode(base64url-decode(segment))` must equal the segment exactly.
+   Base64's slack bits in the final character mean up to 4 different strings decode to the
+   same bytes; without this check, one signed proof has several spellings, defeating a
+   string-keyed single-use / replay check.
+4. Compute `expected = HMAC_SHA256(apiKey, "pkrt1." + dataSegment)`.
+5. **Constant-time-compare** `expected` against `base64url-decode(sigSegment)`. Reject on
    mismatch (forged / tampered).
-5. `payload = JSON(base64url-decode(dataSegment))`.
-6. Reject if `now_ms > payload.exp` (expired).
-7. Require `payload.verified === true`.
-8. Require `payload.transactionId ===` the transaction **you** started — this binds the proof to
+6. `payload = JSON(base64url-decode(dataSegment))`.
+7. Reject if `now_ms > payload.exp` (expired).
+8. Require `payload.verified === true`.
+9. Require `payload.transactionId ===` the transaction **you** started — this binds the proof to
    *this* sign-in. Only then create the session.
 
 **Reference verifier — Node.js** (zero deps; portable to any backend language):
@@ -204,6 +216,8 @@ export function verifyAkedlyResult(token, apiKey) {
   const [data, sig] = parts;
   const b64u = /^[A-Za-z0-9_-]+$/;                                  // strict unpadded base64url
   if (!b64u.test(data) || !b64u.test(sig)) return null;            // no alternate serializations
+  if (Buffer.from(data, 'base64url').toString('base64url') !== data ||
+      Buffer.from(sig, 'base64url').toString('base64url') !== sig) return null; // canonical only — slack bits in the last char alias one sig to several strings
   const expected = crypto.createHmac('sha256', apiKey).update('pkrt1.' + data).digest();
   const given = Buffer.from(sig, 'base64url');
   if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return null;
@@ -235,6 +249,13 @@ func base64urlDecode(_ s: String) -> Data? {
     return Data(base64Encoded: b)
 }
 
+func base64urlEncode(_ d: Data) -> String {
+    return d.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
+
 func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
     guard a.count == b.count else { return false }
     var diff: UInt8 = 0
@@ -262,21 +283,24 @@ func verifyAkedlyResult(_ token: String, apiKey: String) -> AkedlyClaim? {
     let expected = Data(HMAC<SHA256>.authenticationCode(for: message, using: key))
 
     guard let provided = base64urlDecode(sigSegment),
-          constantTimeEqual(expected, provided),
+          base64urlEncode(provided) == sigSegment,                   // canonical only — slack bits in the
+          constantTimeEqual(expected, provided),                     // last char alias one sig to several strings
           let payloadData = base64urlDecode(dataSegment),
+          base64urlEncode(payloadData) == dataSegment,               // canonical (same rule for the payload)
           let claim = try? JSONDecoder().decode(AkedlyClaim.self, from: payloadData),
-          claim.exp > Date().timeIntervalSince1970 * 1000            // not expired (ms)
+          claim.exp > Date().timeIntervalSince1970 * 1000,           // not expired (ms)
+          claim.verified                                             // only a verified outcome is trustworthy
     else { return nil }
     return claim
 }
 
 // On your sign-in route, after the app POSTs { resultToken }:
 //   guard let claim = verifyAkedlyResult(resultToken, apiKey: AKEDLY_API_KEY),
-//         claim.verified, claim.transactionId == expectedTxId else { /* reject */ }
+//         claim.transactionId == expectedTxId else { /* reject */ }
 //   createSession(user)
 ```
 
-Treat the token like a one-time auth code: short-lived (~10 min) and accepted once.
+Treat the token like a one-time auth code: short-lived (~2 min) and accepted once.
 
 ### Local vs on-device testing
 
@@ -302,11 +326,42 @@ relying-party (RP) ID the passkey binds to.
 nothing but `ASWebAuthenticationSession` (or `SFSafariViewController` / a Custom Tab):
 
 ```swift
-let url = URL(string: "https://auth.akedly.io/pk?token=\(ceremonyToken)&returnUrl=myapp://akedly-passkey")!
-let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "myapp") { callbackURL, _ in
-    guard let callbackURL else { return } // nil on user-cancel — fall back to OTP
-    // callbackURL = myapp://akedly-passkey?verified=true&transactionId=…&resultToken=pkrt1.…
-    let result = AkedlyPasskeyCeremony.parseResult(from: callbackURL) // or parse the query yourself
+final class PasskeyLauncher: NSObject, ASWebAuthenticationPresentationContextProviding {
+    // Retain the session for the ceremony's lifetime — a local `let` would deallocate it
+    // (and dismiss the sheet) as soon as the enclosing scope returns.
+    private var session: ASWebAuthenticationSession?
+
+    func start(ceremonyToken: String) {
+        // Percent-encode the query VALUES (the SDK's buildURL does this for both the token
+        // and the returnUrl): myapp://akedly-passkey → myapp%3A%2F%2Fakedly-passkey. A bare
+        // `://` in a query value corrupts the query. Ceremony tokens are base64url + `.`
+        // (already query-safe), but encode defensively so the example is correct for any value.
+        var comps = URLComponents(string: "https://auth.akedly.io/pk")!
+        comps.queryItems = [
+            URLQueryItem(name: "token", value: ceremonyToken),
+            URLQueryItem(name: "returnUrl", value: "myapp://akedly-passkey"),
+        ]
+        // URLComponents leaves "+" literal in query values; encode it too (matches buildURL).
+        comps.percentEncodedQuery = comps.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        let url = comps.url!
+        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "myapp") { [weak self] callbackURL, _ in
+            self?.session = nil
+            guard let callbackURL else { return } // nil on user-cancel — fall back to OTP
+            // callbackURL = myapp://akedly-passkey?verified=true&transactionId=…&resultToken=pkrt1.…
+            let result = AkedlyPasskeyCeremony.parseResult(from: callbackURL) // or parse the query yourself
+            // hand result.resultToken to your backend …
+        }
+        session.presentationContextProvider = self
+        self.session = session
+        session.start()
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
+    }
 }
 ```
 

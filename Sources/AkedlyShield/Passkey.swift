@@ -7,7 +7,7 @@ import Foundation
 /// `resultToken` to YOUR backend, which verifies it **offline** by recomputing an HMAC with
 /// your Akedly API key — no polling, no server-to-server callback. See the README
 /// "Verify the result".
-public struct AkedlyPasskeyResult: Equatable {
+public struct AkedlyPasskeyResult: Equatable, Sendable {
     /// True only on a completed, server-verified ceremony.
     public let verified: Bool
     /// "auth" | "enroll" (nil if the page didn't report it).
@@ -19,8 +19,9 @@ public struct AkedlyPasskeyResult: Equatable {
     public let resultToken: String?
     /// `nil` when verified; otherwise a fall-back reason: "closed" (user cancelled),
     /// "busy" (a ceremony is already in flight on this instance), "invalid_url",
-    /// "start_failed", "no_proof" (verified with no result token), "failed" (unparseable
-    /// callback), or a server code.
+    /// "start_failed" (the session could not start, or failed for a non-cancel reason —
+    /// e.g. an invalid presentation context), "no_proof" (verified with no result token),
+    /// "failed" (unparseable callback), or a server code.
     public let reason: String?
 
     public init(
@@ -99,6 +100,22 @@ import UIKit
 import AppKit
 #endif
 
+extension AkedlyPasskeyCeremony {
+    /// Map an `ASWebAuthenticationSession` completion to a result. Only a user cancel
+    /// (`canceledLogin`) is `reason: "closed"`; every other failure — an invalid or missing
+    /// presentation context, or any non-AuthenticationServices error — is `"start_failed"`,
+    /// so an integration bug is never mistaken for the user dismissing the sheet.
+    public static func mapSessionCompletion(callbackURL: URL?, error: Error?) -> AkedlyPasskeyResult {
+        if let callbackURL = callbackURL {
+            return parseResult(from: callbackURL)
+        }
+        if let asError = error as? ASWebAuthenticationSessionError, asError.code == .canceledLogin {
+            return AkedlyPasskeyResult(verified: false, reason: "closed")
+        }
+        return AkedlyPasskeyResult(verified: false, reason: "start_failed")
+    }
+}
+
 /// Runs the hosted V1.2 passkey ceremony in an `ASWebAuthenticationSession`. The session
 /// shares the system credential store, so platform passkeys (Face ID / Touch ID / device
 /// PIN) work, and it captures the page's return-URL deep link internally — no Info.plist
@@ -126,7 +143,9 @@ public final class AkedlyPasskey: NSObject {
 
     /// Run a hosted passkey ceremony. Resolves when the page deep-links the result back via
     /// `callbackScheme`. **Never throws on a user cancel** — it returns `verified: false`,
-    /// `reason: "closed"` so you can fall straight through to OTP.
+    /// `reason: "closed"` so you can fall straight through to OTP. Cancelling the surrounding
+    /// Task (e.g. a SwiftUI `.task` cancelled on view dismissal) cancels the session and
+    /// resolves the same way.
     ///
     /// Calling this while a ceremony from the same instance is still in flight resolves
     /// immediately with `reason: "busy"` and leaves the running ceremony untouched — start a
@@ -155,25 +174,43 @@ public final class AkedlyPasskey: NSObject {
             return AkedlyPasskeyResult(verified: false, reason: "busy")
         }
 
-        let result = await withCheckedContinuation { (continuation: CheckedContinuation<AkedlyPasskeyResult, Never>) in
-            let session = ASWebAuthenticationSession(
-                url: url,
-                callbackURLScheme: callbackScheme
-            ) { callbackURL, _ in
-                if let callbackURL = callbackURL {
-                    continuation.resume(returning: AkedlyPasskeyCeremony.parseResult(from: callbackURL))
-                } else {
-                    // user cancelled or the session failed — a retryable, non-fatal outcome
-                    continuation.resume(returning: AkedlyPasskeyResult(verified: false, reason: "closed"))
+        // Cancellation: if the consumer's Task is cancelled mid-ceremony (e.g. a SwiftUI `.task`
+        // cancelled on view dismissal), cancel the session — its completion fires with
+        // `canceledLogin`, which resumes as "closed". Without this the continuation would never
+        // resume and the instance would stay "busy" forever. `onCancel` is nonisolated, so hop
+        // back to the main actor to touch `session`.
+        let result = await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { (continuation: CheckedContinuation<AkedlyPasskeyResult, Never>) in
+                // Double-resume guard: the completion handler and the `start()`-failed path both
+                // resume, and an OS edge delivering both would otherwise fatalError.
+                var resumed = false
+                func resumeOnce(_ result: AkedlyPasskeyResult) {
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume(returning: result)
+                }
+                // Cancelled before the session exists — `onCancel` already fired against a nil
+                // session, so nothing would ever resume this continuation. Resolve it here.
+                if Task.isCancelled {
+                    resumeOnce(AkedlyPasskeyResult(verified: false, reason: "closed"))
+                    return
+                }
+                let session = ASWebAuthenticationSession(
+                    url: url,
+                    callbackURLScheme: callbackScheme
+                ) { callbackURL, error in
+                    resumeOnce(AkedlyPasskeyCeremony.mapSessionCompletion(callbackURL: callbackURL, error: error))
+                }
+                session.presentationContextProvider = self
+                session.prefersEphemeralWebBrowserSession = false // false shares Safari cookies; passkeys are OS-level either way
+                self.session = session
+                if !session.start() {
+                    resumeOnce(AkedlyPasskeyResult(verified: false, reason: "start_failed"))
                 }
             }
-            session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = false // share the credential store
-            self.session = session
-            if !session.start() {
-                continuation.resume(returning: AkedlyPasskeyResult(verified: false, reason: "start_failed"))
-            }
-        }
+        }, onCancel: {
+            Task { @MainActor in self.session?.cancel() }
+        })
         self.session = nil // ceremony resolved — release for the next call (main-actor-isolated)
         return result
     }

@@ -1,7 +1,17 @@
 import XCTest
 @testable import AkedlyShield
+#if canImport(AuthenticationServices)
+import AuthenticationServices
+#endif
 
 final class PasskeyTests: XCTestCase {
+
+    func testResultIsSendable() {
+        // Compile-time contract: the result crosses concurrency boundaries (returned from an
+        // async @MainActor method into arbitrary consumer tasks).
+        func requireSendable<T: Sendable>(_: T.Type) {}
+        requireSendable(AkedlyPasskeyResult.self)
+    }
 
     func testBuildURL() {
         let url = AkedlyPasskeyCeremony.buildURL(
@@ -84,4 +94,37 @@ final class PasskeyTests: XCTestCase {
         XCTAssertNil(r.resultToken)
         XCTAssertEqual(r.reason, "no_proof")
     }
+
+    #if canImport(AuthenticationServices)
+    func testSessionCompletionCallbackURLWinsOverError() {
+        let url = URL(string: "myapp://akedly-passkey?verified=true&resultToken=pkrt1.aaa.bbb")!
+        let r = AkedlyPasskeyCeremony.mapSessionCompletion(callbackURL: url, error: nil)
+        XCTAssertTrue(r.verified)
+        XCTAssertEqual(r.resultToken, "pkrt1.aaa.bbb")
+    }
+
+    func testSessionCompletionUserCancelMapsToClosed() {
+        let r = AkedlyPasskeyCeremony.mapSessionCompletion(
+            callbackURL: nil,
+            error: ASWebAuthenticationSessionError(.canceledLogin)
+        )
+        XCTAssertFalse(r.verified)
+        XCTAssertEqual(r.reason, "closed")
+    }
+
+    func testSessionCompletionNonCancelFailuresMapToStartFailed() {
+        // Only a user cancel is "closed" — setup failures must not masquerade as one.
+        let failures: [Error?] = [
+            ASWebAuthenticationSessionError(.presentationContextInvalid),
+            ASWebAuthenticationSessionError(.presentationContextNotProvided),
+            NSError(domain: "SomeOtherDomain", code: 1),
+            nil
+        ]
+        for error in failures {
+            let r = AkedlyPasskeyCeremony.mapSessionCompletion(callbackURL: nil, error: error)
+            XCTAssertFalse(r.verified)
+            XCTAssertEqual(r.reason, "start_failed")
+        }
+    }
+    #endif
 }
