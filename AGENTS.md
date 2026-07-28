@@ -64,9 +64,13 @@ delegates to both via `flutter_web_auth_2`.
      fire-and-forget and cannot signal dismissal at all. Keep the distinction.
    - The cancel-vs-error split at `Passkey.swift:104-116` is deliberate — only `canceledLogin` maps
      to `"closed"`, so an integration bug is never silently reported as "the user changed their mind".
-   - ⚠️ Dart documents an `ineligible` value that **no code anywhere can emit** (verified 2026-07-28:
-     it appears only in `akedly-shield-dart/lib/src/passkey.dart:24`). This repo does **not** have
-     that defect. Do not import it.
+   - ⚠️ **`ineligible` is not a real value — and THIS REPO had it too.** `README.md:131` documented it
+     until 2026-07-28. An earlier note here claimed the defect was Dart-only and that this repo was
+     clean; that was wrong, and it is why this repo was nearly skipped. Do not reintroduce it.
+     Precisely: all three native test suites assert `reason == "ineligible"` when the server sends
+     `code=ineligible`, so the SDK *can* surface it by server-`code` passthrough — it is unreachable
+     only because **no server sends that code**. The real set is `NO_PASSKEY`, `PASSKEY_DISABLED`,
+     `INSUFFICIENT_QUOTA`, `BILLING_FAILED`, `CANCELLED`, `FAILED`.
 
 ## Gotchas
 
