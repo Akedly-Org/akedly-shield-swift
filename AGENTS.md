@@ -46,19 +46,35 @@ internally, so the customer needs no `Info.plist` URL scheme or `AppDelegate` pl
 The equivalent rule binds the sibling SDKs: Android must use **Chrome Custom Tabs**, Flutter
 delegates to both via `flutter_web_auth_2`.
 
-## The cross-SDK contract (identical in kotlin / dart / js — do not diverge)
+## The cross-SDK contract (kotlin / dart / js)
 
-1. **A verified result MUST carry a `resultToken`** (`Passkey.swift:90`). A claimed-verified callback
+**Clauses 1–2 are identical across all four SDKs — do not diverge.** Clause 3's `reason`
+vocabulary is deliberately **per-platform** and is NOT expected to match: Swift carries seven
+values, Dart five, and Kotlin two, because a Custom Tab cannot signal a user cancel at all.
+Aligning them would mean inventing values a platform cannot actually produce.
+
+**`ceremonyOrigin` must be a bare origin** — `scheme://host[:port]`, no path, no trailing slash.
+The four SDKs normalize it differently (JS reduces to a true origin because it reuses the value in
+the `event.origin` equality check; the natives only prefix a URL), so a path-carrying or
+multi-slash value behaves differently per platform. It fails visibly — the ceremony 404s — so this
+is a documented input contract, not a code divergence to "fix".
+
+1. **A verified result MUST carry a `resultToken`** (`Passkey.swift:83-84`). A claimed-verified callback
    with no token is reported `verified: false`, `reason: "no_proof"` — never as a trusted success.
    **Fail closed. This is the whole security property of the relayed result**, since the callback
    arrives over a custom scheme that cannot be trusted on its own.
 2. **The relayed signal is not authoritative.** The customer confirms a sign-in by sending
    `resultToken` to their own backend, which verifies it **offline** by recomputing an HMAC with
    their Akedly API key. No polling, no server-to-server callback needed.
-3. **`reason` vocabulary — this SDK's is legitimately richer than Android's.** `nil` when verified,
-   else `"closed"` (user dismissed), `"start_failed"` (session could not start, or any non-cancel
-   error — e.g. a bad presentation context), `"no_proof"`, `"failed"` (unparseable callback), or a
-   server `code`.
+3. **`reason` vocabulary — this SDK's is legitimately richer than Android's.** The authoritative
+   list is the doc comment at `Passkey.swift:20-24`; keep README.md:131 and this section in step
+   with it. `nil` when verified, else `"closed"` (user dismissed), `"busy"` (a ceremony is already
+   in flight on this instance), `"invalid_url"`, `"start_failed"` (session could not start, or any
+   non-cancel error — e.g. a bad presentation context), `"no_proof"`, `"failed"` (unparseable
+   callback), or a server `code`.
+   - **`"busy"` matters to integrators more than its size suggests:** it is what a double-tap on the
+     sign-in button produces. An integrator whose `else` branch simply falls back to OTP will fire a
+     second OTP on every double-tap, so it must be documented, not left to be discovered.
    - `"closed"` is a genuine platform difference, **not** an inconsistency to "fix": iOS reports a
      user cancel via `ASWebAuthenticationSessionError.canceledLogin`, while Android's Custom Tab is
      fire-and-forget and cannot signal dismissal at all. Keep the distinction.
@@ -74,7 +90,7 @@ delegates to both via `flutter_web_auth_2`.
 
 ## Gotchas
 
-- `Passkey.swift:184` carries a double-resume guard: the completion handler and the `start()`-failed
+- `Passkey.swift:186` carries a double-resume guard: the completion handler and the `start()`-failed
   path can both fire. Removing it risks resuming a continuation twice, which traps in Swift.
 - `prefersEphemeralWebBrowserSession = false` is intentional (`Passkey.swift:205`) — it shares Safari
   cookies. Passkeys are OS-level either way, so this is about session continuity, not passkey access.

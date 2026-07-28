@@ -1,6 +1,6 @@
 # AkedlyShield (Swift)
 
-Client-side PoW solver and Turnstile helper for Akedly Shield V1.2 (iOS/macOS).
+Client-side PoW solver, Turnstile helper, and hosted passkey ceremony launcher for Akedly Shield V1.2 (iOS/macOS).
 
 ## Installation
 
@@ -51,7 +51,7 @@ let token = try await turnstile.getToken(siteKey: "your-site-key")
 **Parameters:**
 - `bridgeDomain` — bridge page domain (default: `turnstile.akedly.io`)
 
-**Requires:** iOS 13+ (CryptoKit + WKWebView)
+**Requires:** iOS 13+ / macOS 10.15 (CryptoKit); Turnstile is iOS-only (WKWebView)
 
 ## Full Integration Example
 
@@ -128,13 +128,22 @@ if result.verified {
     // 3. Confirm offline on YOUR backend (no polling, no callback) — see below.
     try await myBackend.completeSignIn(resultToken: result.resultToken!)
 } else {
-    // result.reason: "closed" (cancel) | "start_failed" | "no_proof" | "failed" | <server code>
+    // result.reason: "closed" (cancel) | "busy" (a ceremony is already in flight) | "invalid_url"
+    //              | "start_failed" | "no_proof" | "failed" | <server code>
     await runOtpFallback()
 }
 ```
 
 To **enroll** a passkey, pass the `enrollmentToken` from a successful OTP `/verify` as the
 `token` instead — the API is identical; enrollment is proven on the next successful sign-in.
+
+> ⚠️ **Enrollment's result is unproven unless you ask for the proof.** The hosted page relays a
+> `resultToken` only to a **server-signed** return target, and the enrollment token carries one only
+> if your backend passed `returnTarget` to `/verify` (e.g. `{ "url": "myapp://akedly-passkey" }`).
+> Omit it and enrollment still succeeds — the passkey is created and works — but this SDK reports
+> `verified: false` / `no_proof`, because it refuses to call an unproven result verified. So either
+> pass `returnTarget` at `/verify`, or treat the enroll result as advisory and let the next
+> successful sign-in be the proof. Do not gate your "passkey enabled" UI on the enroll result alone.
 
 > **Presenting reliably on first launch.** By default the session's presentation anchor is
 > resolved at ceremony time from the app's **foreground-active key window**. Early in the app
@@ -323,7 +332,9 @@ relying-party (RP) ID the passkey binds to.
 ### Without the SDK (open the page yourself)
 
 `AkedlyPasskey` is a thin convenience wrapper. You can run the exact same ceremony with
-nothing but `ASWebAuthenticationSession` (or `SFSafariViewController` / a Custom Tab):
+nothing but `ASWebAuthenticationSession` — **no dependency on this package at all.** The URL
+construction below is deliberately spelled out for that reason; do not "simplify" it by calling
+`AkedlyPasskeyCeremony.buildURL`, which would defeat the point of the example.
 
 ```swift
 final class PasskeyLauncher: NSObject, ASWebAuthenticationPresentationContextProviding {

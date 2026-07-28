@@ -49,7 +49,7 @@ final class PasskeyTests: XCTestCase {
             token: "t",
             callbackScheme: "demo"
         )
-        XCTAssertEqual(url?.absoluteString.contains("//localhost:5174/pk?"), true)
+        XCTAssertEqual(url?.absoluteString, "http://localhost:5174/pk?token=t&returnUrl=demo%3A%2F%2Fakedly-passkey")
     }
 
     func testParseVerifiedResult() {
