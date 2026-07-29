@@ -8,7 +8,8 @@ import Foundation
 /// your Akedly API key — no polling, no server-to-server callback to Akedly. See the README
 /// "Verify the result".
 public struct AkedlyPasskeyResult: Equatable, Sendable {
-    /// True only on a completed, server-verified ceremony.
+    /// True only when the relay claims completion and includes a non-empty result token.
+    /// The app must still send that token to its backend for HMAC and transaction verification.
     public let verified: Bool
     /// "auth" | "enroll" (nil if the page didn't report it).
     public let purpose: String?

@@ -335,18 +335,29 @@ relying-party (RP) ID the passkey binds to.
 > headless Playwright + Chrome virtual-authenticator gate — for exercising this loop without a
 > physical device.
 
-### Without the SDK (open the page yourself)
+### Without the launcher (open the page yourself)
 
 `AkedlyPasskey` is a thin convenience wrapper. You can run the exact same ceremony with
-nothing but `ASWebAuthenticationSession` — **no dependency on this package at all.** The URL
-construction below is deliberately spelled out for that reason; do not "simplify" it by calling
-`AkedlyPasskeyCeremony.buildURL`, which would defeat the point of the example.
+`ASWebAuthenticationSession` while still using this package's result parser. The URL construction
+below is deliberately spelled out so the session lifecycle and signed-versus-unsigned return-target
+boundary remain visible. This iOS example belongs in a target that depends on `AkedlyShield`.
 
 ```swift
+import AkedlyShield
+import AuthenticationServices
+import UIKit
+
 final class PasskeyLauncher: NSObject, ASWebAuthenticationPresentationContextProviding {
     // Retain the session for the ceremony's lifetime — a local `let` would deallocate it
     // (and dismiss the sheet) as soon as the enclosing scope returns.
     private var session: ASWebAuthenticationSession?
+    private let onFallback: () -> Void
+    private let onFailure: (Error?) -> Void
+
+    init(onFallback: @escaping () -> Void, onFailure: @escaping (Error?) -> Void) {
+        self.onFallback = onFallback
+        self.onFailure = onFailure
+    }
 
     func start(ceremonyToken: String) {
         // Percent-encode the query VALUES (the SDK's buildURL does this for both the token
@@ -361,9 +372,17 @@ final class PasskeyLauncher: NSObject, ASWebAuthenticationPresentationContextPro
         // URLComponents leaves "+" literal in query values; encode it too (matches buildURL).
         comps.percentEncodedQuery = comps.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         let url = comps.url!
-        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "myapp") { [weak self] callbackURL, _ in
+        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "myapp") { [weak self] callbackURL, error in
             self?.session = nil
-            guard let callbackURL else { return } // nil on user-cancel — fall back to OTP
+            guard let callbackURL else {
+                if let asError = error as? ASWebAuthenticationSessionError,
+                   asError.code == .canceledLogin {
+                    self?.onFallback()
+                } else {
+                    self?.onFailure(error)
+                }
+                return
+            }
             // callbackURL = myapp://akedly-passkey?verified=true&transactionId=…
             // resultToken rides ONLY if your backend signed returnTarget into the ceremony token
             // at /auth-options. Built by hand from the query alone, the target is untrusted, the
