@@ -79,7 +79,14 @@ public enum AkedlyPasskeyCeremony {
     /// `reason: "no_proof"`, never as a trusted success.
     public static func parseResult(from url: URL) -> AkedlyPasskeyResult {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        func q(_ name: String) -> String? { items.first(where: { $0.name == name })?.value }
+        let resultFields = Set(["type", "purpose", "verified", "transactionId", "code", "resultToken"])
+        var values = [String: URLQueryItem]()
+        for item in items where resultFields.contains(item.name) {
+            if values.updateValue(item, forKey: item.name) != nil {
+                return AkedlyPasskeyResult(verified: false, reason: "failed")
+            }
+        }
+        func q(_ name: String) -> String? { values[name]?.value }
         let claimedVerified = (q("verified") ?? "false") == "true"
         let token = q("resultToken")
         let hasProof = !((token?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ?? true)

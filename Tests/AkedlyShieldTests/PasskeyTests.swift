@@ -95,6 +95,18 @@ final class PasskeyTests: XCTestCase {
         XCTAssertEqual(r.reason, "no_proof")
     }
 
+    func testDuplicateReservedResultParamsFailClosed() {
+        let base = "type=AKEDLY_PASSKEY_RESULT&purpose=auth&verified=true&transactionId=tx_9&code=ineligible&resultToken=pkrt1.aaa.bbb"
+        let fields = ["type", "purpose", "verified", "transactionId", "code", "resultToken"]
+        for name in fields {
+            let url = URL(string: "myapp://akedly-passkey?\(base)&\(name)=duplicate")!
+            let r = AkedlyPasskeyCeremony.parseResult(from: url)
+            XCTAssertFalse(r.verified, "duplicate \(name) must fail closed")
+            XCTAssertNil(r.resultToken)
+            XCTAssertEqual(r.reason, "failed")
+        }
+    }
+
     #if canImport(AuthenticationServices)
     func testSessionCompletionCallbackURLWinsOverError() {
         let url = URL(string: "myapp://akedly-passkey?verified=true&resultToken=pkrt1.aaa.bbb")!
