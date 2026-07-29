@@ -116,8 +116,9 @@ import AkedlyShield
 
 // 1. Your backend clears the gate + starts the ceremony:
 //    POST /api/v1.2/transactions/passkey/auth-options
-//      { APIKey, pipelineID, verificationAddress: { phoneNumber }, powSolution?, turnstileToken? }
-//    -> { data: { ceremonyToken } }   (or a "no passkey" code -> use OTP)
+//      { APIKey, pipelineID, verificationAddress: { phoneNumber }, powSolution?, turnstileToken?,
+//        returnTarget: { "url": "myapp://akedly-passkey" } }  // <-- REQUIRED for the resultToken
+//    -> { data: { ceremonyToken } }   (or 404 NO_PASSKEY -> use OTP)
 let ceremonyToken = try await myBackend.startPasskeyAuth(phone)
 
 // 2. Run the ceremony. `callbackScheme` is your app's URL scheme.
@@ -125,7 +126,8 @@ let passkey = AkedlyPasskey() // or AkedlyPasskey(ceremonyOrigin: "http://localh
 let result = await passkey.openPasskeyCeremony(token: ceremonyToken, callbackScheme: "myapp")
 
 if result.verified {
-    // 3. Confirm offline on YOUR backend (no polling, no callback) — see below.
+    // 3. Confirm offline on YOUR backend — no polling needed. (Akedly also fires the pipeline's
+    //    backend callback, if configured; it is unsigned, so the resultToken is the proof.)
     try await myBackend.completeSignIn(resultToken: result.resultToken!)
 } else {
     // result.reason: "closed" (cancel) | "busy" (a ceremony is already in flight) | "invalid_url"
@@ -137,13 +139,17 @@ if result.verified {
 To **enroll** a passkey, pass the `enrollmentToken` from a successful OTP `/verify` as the
 `token` instead — the API is identical; enrollment is proven on the next successful sign-in.
 
-> ⚠️ **Enrollment's result is unproven unless you ask for the proof.** The hosted page relays a
-> `resultToken` only to a **server-signed** return target, and the enrollment token carries one only
-> if your backend passed `returnTarget` to `/verify` (e.g. `{ "url": "myapp://akedly-passkey" }`).
-> Omit it and enrollment still succeeds — the passkey is created and works — but this SDK reports
-> `verified: false` / `no_proof`, because it refuses to call an unproven result verified. So either
-> pass `returnTarget` at `/verify`, or treat the enroll result as advisory and let the next
-> successful sign-in be the proof. Do not gate your "passkey enabled" UI on the enroll result alone.
+> ⚠️ **The result is unproven unless you ask for the proof — on BOTH flows.** The hosted page relays
+> a `resultToken` only to a **server-signed** return target. The `returnUrl` this SDK puts in the
+> query selects the redirect but is always untrusted, so the token is stripped unless your backend
+> passed `returnTarget` (e.g. `{ "url": "myapp://akedly-passkey" }`) — to `/auth-options` when
+> authenticating, or to `/verify` when enrolling. Omit it and the ceremony still succeeds, but this
+> SDK reports `verified: false` / `no_proof`, because it refuses to call an unproven result verified.
+>
+> - **Authenticating:** pass `returnTarget` at `/auth-options`, or you will never see
+>   `verified: true` in the app and must reconcile against the pipeline's backend callback instead.
+> - **Enrolling:** pass it at `/verify`, or treat the enroll result as advisory and let the next
+>   successful sign-in be the proof. Do not gate your "passkey enabled" UI on the enroll result alone.
 
 > **Presenting reliably on first launch.** By default the session's presentation anchor is
 > resolved at ceremony time from the app's **foreground-active key window**. Early in the app
@@ -358,7 +364,10 @@ final class PasskeyLauncher: NSObject, ASWebAuthenticationPresentationContextPro
         let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "myapp") { [weak self] callbackURL, _ in
             self?.session = nil
             guard let callbackURL else { return } // nil on user-cancel — fall back to OTP
-            // callbackURL = myapp://akedly-passkey?verified=true&transactionId=…&resultToken=pkrt1.…
+            // callbackURL = myapp://akedly-passkey?verified=true&transactionId=…
+            // resultToken rides ONLY if your backend signed returnTarget into the ceremony token
+            // at /auth-options. Built by hand from the query alone, the target is untrusted, the
+            // token is stripped, and parseResult yields verified:false / no_proof.
             let result = AkedlyPasskeyCeremony.parseResult(from: callbackURL) // or parse the query yourself
             // hand result.resultToken to your backend …
         }

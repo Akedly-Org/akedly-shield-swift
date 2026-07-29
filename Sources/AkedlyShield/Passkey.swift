@@ -5,7 +5,7 @@ import Foundation
 ///
 /// The relayed signal is **non-authoritative on its own**. Confirm a sign-in by sending
 /// `resultToken` to YOUR backend, which verifies it **offline** by recomputing an HMAC with
-/// your Akedly API key — no polling, no server-to-server callback. See the README
+/// your Akedly API key — no polling, no server-to-server callback to Akedly. See the README
 /// "Verify the result".
 public struct AkedlyPasskeyResult: Equatable, Sendable {
     /// True only on a completed, server-verified ceremony.
@@ -44,9 +44,11 @@ public struct AkedlyPasskeyResult: Equatable, Sendable {
 public enum AkedlyPasskeyCeremony {
     /// Build the hosted ceremony URL: `<origin>/pk?token=…&returnUrl=<scheme>://akedly-passkey`.
     ///
-    /// `returnUrl` is passed as a query param so the integration needs no server-side
-    /// returnTarget config. For stricter setups, omit `callbackScheme`-as-query and configure
-    /// `returnTarget` on `POST /auth-options` instead (it is signed into the ceremony token).
+    /// `returnUrl` is passed as a query param, which selects WHERE the ceremony redirects — it does
+    /// NOT authorize proof delivery. A query-supplied target is always untrusted, so the redirect
+    /// carries no `resultToken` and the result reads `verified: false` / `no_proof` even on success.
+    /// To receive the proof, your backend must sign a `returnTarget` into the ceremony token via
+    /// `POST /auth-options` (or `/verify` when enrolling).
     public static func buildURL(origin: String, token: String, callbackScheme: String) -> URL? {
         let trimmed = origin.hasSuffix("/") ? String(origin.dropLast()) : origin
         let tok = encodeQueryValue(token)
