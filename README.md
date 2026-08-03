@@ -155,8 +155,15 @@ To **enroll** a passkey, pass the `enrollmentToken` from a successful OTP `/veri
 > resolved at ceremony time from the app's **foreground-active key window**. Early in the app
 > lifecycle — first launch, a cold-start deep link, mid scene-transition — that window may not
 > exist yet and the session can fail to present. If you call `openPasskeyCeremony` early, pass
-> your window explicitly: `AkedlyPasskey(presentationAnchor: { myWindow })`. The default anchor
-> resolution uses `UIApplication.shared`, so the library is **not usable from app extensions**.
+> your window explicitly: `AkedlyPasskey(presentationAnchor: { myWindow })`.
+>
+> **App extensions: this library does not build into one.** `defaultPresentationAnchor()` reads
+> `UIApplication.shared`, which UIKit marks unavailable in app extensions — and that is a *compile*
+> error for any target built with `APPLICATION_EXTENSION_API_ONLY = YES`, whether or not you pass an
+> explicit anchor, because the symbol is referenced either way. Run the ceremony from the containing
+> app. (Marking the anchor path `@available(iOSApplicationExtension, unavailable)` would turn this
+> from a confusing UIKit error into a clear one; it is not done yet because it needs a Mac to
+> compile-verify against the `ASWebAuthenticationPresentationContextProviding` conformance.)
 
 ### Verify the result (seamless — no polling)
 
@@ -166,9 +173,22 @@ server-to-server callback to Akedly. The token is HMAC-signed with **your accoun
 same secret you already use to create transactions), so only your backend — which holds that key
 — can verify it.
 
-> ⚠️ **Verify on your server, never in the app.** Your API key is a server secret. Do **not**
-> embed it in the iOS app or verify the token on-device. The app forwards `result.resultToken`
-> to your backend; your backend verifies it and creates the session.
+> ⚠️ **Verify on your server, never in the app.** The app forwards `result.resultToken` to your
+> backend; your backend verifies it and creates the session. Verifying on-device proves nothing —
+> the device is what you are trying to authenticate.
+>
+> 🛑 **This only works if your API key is not in your app — and the OTP example above puts it
+> there.** The proof is an HMAC under your account API key, so *anyone who holds that key can mint
+> a `verified: true` token for any transaction*. "Full Integration Example" above sends `apiKey`
+> straight from the device, which ships it in your binary where it is trivially extracted. If you
+> do both, a user who pulls the key out of your app can enter a victim's phone number, let your
+> backend start the transaction, forge a proof for it, and be signed in as that victim.
+>
+> Pick one:
+> - **Route the V1.2 OTP calls through your own backend** so the key never ships in the app
+>   (recommended — the passkey `auth-options` call above is already server-side for this reason), or
+> - **Don't use offline verification.** Confirm the outcome server-to-server with `GET /result`
+>   instead, and treat `resultToken` as a UX-only signal.
 
 **Token format**
 
@@ -215,8 +235,16 @@ signature = HMAC_SHA256( key = YOUR_API_KEY, message = "pkrt1." + base64url(payl
 6. `payload = JSON(base64url-decode(dataSegment))`.
 7. Reject if `now_ms > payload.exp` (expired).
 8. Require `payload.verified === true`.
-9. Require `payload.transactionId ===` the transaction **you** started — this binds the proof to
-   *this* sign-in. Only then create the session.
+9. Require `payload.transactionId ===` the transaction **you** started, and `payload.pipelineId ===`
+   your pipeline — this binds the proof to *this* sign-in.
+10. Require `payload.purpose === "auth"`. An `"enroll"` proof says a passkey was **registered**,
+    not that the holder authenticated — accepting one as a sign-in lets anyone who can enroll a
+    passkey log in as the account it was enrolled against.
+11. **Consume the token once.** Record the `transactionId` (or the whole token) as spent and reject
+    a repeat. The signature stays valid for its full 2-minute life, so without this a token
+    observed in a redirect URL, a referrer, or a log can be replayed.
+
+Only after all eleven do you create the session.
 
 **Reference verifier — Node.js** (zero deps; portable to any backend language):
 
