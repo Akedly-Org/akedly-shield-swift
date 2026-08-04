@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macOS, not ubuntu: the package imports CryptoKit, WebKit and AuthenticationServices,
+    # none of which exist in the Linux Swift toolchain.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: swift --version
+
+      - run: swift build
+
+      - run: swift test
