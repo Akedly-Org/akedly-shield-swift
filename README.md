@@ -151,6 +151,48 @@ To **enroll** a passkey, pass the `enrollmentToken` from a successful OTP `/veri
 > - **Enrolling:** pass it at `/verify`, or treat the enroll result as advisory and let the next
 >   successful sign-in be the proof. Do not gate your "passkey enabled" UI on the enroll result alone.
 
+### Native iOS passkeys
+
+On iOS 16 and newer, `AkedlyPasskey.register` and `AkedlyPasskey.authenticate` use the system
+platform authenticator directly. They return the exact `attResp` or `authResp` JSON expected by
+the V1.2 backend and never make a network request. Your backend must fetch the options, pass the
+app identity when it requests them, and post the returned response for verification:
+
+```json
+{"nativeApp":{"platform":"ios","appId":"com.example.myapp"}}
+```
+
+Pass the returned `data.options` as `Data` (the primary overload) or as a `[String: Any]`
+dictionary:
+
+```swift
+let authResponse = try await AkedlyPasskey.authenticate(options: optionsData)
+try await myBackend.verifyPasskey(authResponse: authResponse)
+```
+
+Add the Associated Domains capability with `webcredentials:akedly.io`. For a debug build, also
+add `webcredentials:akedly.io?mode=developer`. Register the Team ID and bundle identifier with
+Akedly and wait for the app registration to be approved and published. No URL scheme or app-side
+API key is required for the native flow.
+
+`AkedlyPasskey.isNativeSupported` is `true` only on iOS 16 or newer. On iOS 13–15, native calls
+throw `AkedlyPasskeyError.unsupported`; use `openPasskeyCeremony` as the hosted fallback. The
+native SDK also never owns the OTP or `PASSKEY_REPROOF_REQUIRED` fallback: your backend continues
+the same transaction through its ordinary OTP flow when native verification asks for re-proof.
+
+| Error | Meaning |
+| --- | --- |
+| `unsupported` | Native platform passkeys are unavailable on this OS. |
+| `cancelled` | The user explicitly cancelled/dismissed the system sheet, iOS found no matching credential, or the task was cancelled. iOS does not expose a separate `noCredential` result. |
+| `invalidOptions` | The options JSON is malformed or has no allowed credential. |
+| `failed` | Authentication Services returned another error. |
+
+Every non-successful native registration or authentication outcome falls back through the merchant's OTP flow; connectivity failures come from merchant backend calls because this SDK makes no network request.
+
+If backend verification returns `PASSKEY_REPROOF_REQUIRED`, keep the same transaction lineage and
+run the merchant's ordinary `/send` then `/verify` OTP flow. Native ceremonies do not use the
+hosted continuation token.
+
 > **Presenting reliably on first launch.** By default the session's presentation anchor is
 > resolved at ceremony time from the app's **foreground-active key window**. Early in the app
 > lifecycle — first launch, a cold-start deep link, mid scene-transition — that window may not

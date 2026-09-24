@@ -19,7 +19,7 @@ swift test
 swift build
 ```
 
-There is **no CI in this repo**. Never claim a build or test run you did not actually see succeed.
+CI runs `swift build` and `swift test` on macOS. Never claim a build or test run you did not actually see succeed.
 
 ## Conventions
 
