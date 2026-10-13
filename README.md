@@ -175,6 +175,9 @@ add `webcredentials:akedly.io?mode=developer`. Register the Team ID and bundle i
 Akedly and wait for the app registration to be approved and published. No URL scheme or app-side
 API key is required for the native flow.
 
+Native registration honours `excludeCredentials` only on iOS 17.4 and later. Older iOS
+versions may let a person create a second passkey for the same phone.
+
 `AkedlyPasskey.isNativeSupported` is `true` only on iOS 16 or newer. On iOS 13–15, native calls
 throw `AkedlyPasskeyError.unsupported`; use `openPasskeyCeremony` as the hosted fallback. The
 native SDK also never owns the OTP or `PASSKEY_REPROOF_REQUIRED` fallback: your backend continues
