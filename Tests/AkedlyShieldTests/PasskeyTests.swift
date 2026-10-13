@@ -6,6 +6,97 @@ import AuthenticationServices
 
 final class PasskeyTests: XCTestCase {
 
+    func testNativeAssertionOptionsRejectHostileValuesAndIgnoreTransports() throws {
+        let payload = Data([0xfb, 0xff, 0xff, 0xfb])
+        let encoded = payload.base64URLEncodedString()
+
+        XCTAssertEqual(encoded, "-___-w")
+        XCTAssertEqual(Data(base64URLEncoded: encoded), payload)
+
+        let challenge = Data([1, 2, 3]).base64URLEncodedString()
+        let credentialIDs = [Data([4, 5, 6]), Data([7, 8, 9]), Data([10, 11, 12])]
+        let options: [String: Any] = [
+            "challenge": challenge,
+            "rpId": "akedly.io",
+            "allowCredentials": [
+                [
+                    "id": credentialIDs[0].base64URLEncodedString(),
+                    "type": "public-key",
+                    "transports": ["internal"]
+                ],
+                [
+                    "id": credentialIDs[1].base64URLEncodedString(),
+                    "type": "public-key"
+                ],
+                [
+                    "id": credentialIDs[2].base64URLEncodedString(),
+                    "type": "public-key",
+                    "transports": NSNull()
+                ]
+            ]
+        ]
+
+        let mapped = try AkedlyPasskeyNativeMapper.assertionOptions(from: options)
+        XCTAssertEqual(mapped.challenge, Data(base64URLEncoded: challenge))
+        XCTAssertEqual(mapped.rpId, "akedly.io")
+        XCTAssertEqual(mapped.allowedCredentialIDs, credentialIDs)
+
+        func assertInvalid(_ value: Any, file: StaticString = #filePath, line: UInt = #line) {
+            var invalidOptions = options
+            invalidOptions["allowCredentials"] = value
+            XCTAssertThrowsError(try AkedlyPasskeyNativeMapper.assertionOptions(from: invalidOptions), file: file, line: line) { error in
+                guard case AkedlyPasskeyError.invalidOptions = error else {
+                    XCTFail("expected invalidOptions, got \(error)", file: file, line: line)
+                    return
+                }
+            }
+        }
+
+        assertInvalid([])
+        var missingOptions = options
+        missingOptions.removeValue(forKey: "allowCredentials")
+        XCTAssertThrowsError(try AkedlyPasskeyNativeMapper.assertionOptions(from: missingOptions))
+        assertInvalid(NSNull())
+        assertInvalid([["id": "abc=", "type": "public-key"]])
+        assertInvalid([["id": "a", "type": "public-key"]])
+        assertInvalid([["id": 123, "type": "public-key"]])
+    }
+
+#if canImport(AuthenticationServices)
+    @MainActor
+    func testNativePublicAPIIsUnsupportedOnMacOSAndRejectsNonJSONDictionaries() async throws {
+        #if os(macOS)
+        XCTAssertFalse(AkedlyPasskey.isNativeSupported)
+
+        do {
+            _ = try await AkedlyPasskey.register(options: Data("{}".utf8))
+            XCTFail("macOS must report unsupported")
+        } catch AkedlyPasskeyError.unsupported {
+        }
+        do {
+            _ = try await AkedlyPasskey.authenticate(options: Data("{}".utf8))
+            XCTFail("macOS must report unsupported")
+        } catch AkedlyPasskeyError.unsupported {
+        }
+        do {
+            _ = try await AkedlyPasskey.register(options: ["valid": true])
+            XCTFail("macOS must report unsupported")
+        } catch AkedlyPasskeyError.unsupported {
+        }
+        do {
+            _ = try await AkedlyPasskey.authenticate(options: ["valid": true])
+            XCTFail("macOS must report unsupported")
+        } catch AkedlyPasskeyError.unsupported {
+        }
+        do {
+            _ = try await AkedlyPasskey.authenticate(options: ["invalid": Date()])
+            XCTFail("non-JSON values must be rejected")
+        } catch AkedlyPasskeyError.invalidOptions {
+        }
+        #endif
+    }
+#endif
+
     func testResultIsSendable() {
         // Compile-time contract: the result crosses concurrency boundaries (returned from an
         // async @MainActor method into arbitrary consumer tasks).

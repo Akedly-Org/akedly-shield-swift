@@ -19,7 +19,9 @@ swift test
 swift build
 ```
 
-There is **no CI in this repo**. Never claim a build or test run you did not actually see succeed.
+CI is configured in `.github/workflows/ci.yml` to run `swift build`, `swift test`, and an
+`xcodebuild` iOS compile step on macOS. The iOS compile step has not yet run. Never claim a
+build or test run you did not actually see succeed.
 
 ## Conventions
 

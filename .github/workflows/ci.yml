@@ -19,3 +19,6 @@ jobs:
       - run: swift build
 
       - run: swift test
+
+      - name: Compile iOS target
+        run: xcodebuild -scheme AkedlyShield -destination "generic/platform=iOS" -sdk iphoneos CODE_SIGNING_ALLOWED=NO build
